@@ -55,6 +55,7 @@
         {{ optional('with tag', dynamic_table.table_tag, quote_char='(', equals_char='') }}
         {{ optional('cluster by', dynamic_table.cluster_by, quote_char='(', equals_char='') }}
         {{ optional('immutable where', dynamic_table.immutable_where, quote_char='(', equals_char='') }}
+        {{ optional('execute as user', dynamic_table.execute_as_user, equals_char='') }}
         as (
             {{ sql }}
         )
@@ -100,6 +101,7 @@
         {{ optional('table_tag', dynamic_table.table_tag) }}
         {{ optional('cluster by', dynamic_table.cluster_by, quote_char='(', equals_char='') }}
         {{ optional('immutable where', dynamic_table.immutable_where, quote_char='(', equals_char='') }}
+        {{ optional('execute as user', dynamic_table.execute_as_user, equals_char='') }}
         as (
             {{ sql }}
         )

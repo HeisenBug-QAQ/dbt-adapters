@@ -116,6 +116,7 @@ class SnowflakeConfig(AdapterConfig):
     row_access_policy: Optional[str] = None
     table_tag: Optional[str] = None
     immutable_where: Optional[str] = None
+    execute_as_user: Optional[str] = None
 
     # extended formats
     table_format: Optional[str] = None
@@ -742,6 +743,9 @@ CALL {proc_name}();
             base_columns.insert(base_columns.index("warehouse") + 1, "initialization_warehouse")
         if "scheduler" in available_columns:
             base_columns.append("scheduler")
+        # execute_as_user may not be exposed on every account/version, same as the columns above
+        if "execute_as_user" in available_columns:
+            base_columns.append("execute_as_user")
 
         selected = dt_table.select(base_columns)
 

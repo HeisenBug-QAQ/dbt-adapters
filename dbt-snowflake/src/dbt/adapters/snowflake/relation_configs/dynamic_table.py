@@ -65,6 +65,7 @@ class SnowflakeDynamicTableConfig(SnowflakeRelationConfigBase):
     - cluster_by: specifies the columns to cluster on
     - immutable_where: specifies an immutability constraint expression
     - transient: specifies whether the dynamic table is transient (no fail-safe). snowflake_default_transient_dynamic_tables determines the default value
+    - execute_as_user: the user whose identity the dynamic table's refreshes run as, so CURRENT_USER()-gated policies resolve against that user instead of the internal refresh identity. Requires GRANT IMPERSONATE ON USER <user> TO ROLE <owner> and the dynamic table's owner role to be granted to that user
 
     There are currently no non-configurable parameters.
     """
@@ -86,6 +87,11 @@ class SnowflakeDynamicTableConfig(SnowflakeRelationConfigBase):
     copy_grants: Optional[bool] = None
     immutable_where: Optional[str] = None
     transient: Optional[bool] = None
+    execute_as_user: Optional[str] = None
+    # False when SHOW did not report the column at all (older/unsupported accounts), as opposed to
+    # reporting it as NULL. Without this the two are indistinguishable and a configured value would
+    # diff against a permanent None -- an ALTER re-emitted on every run that never converges.
+    execute_as_user_reported: bool = True
 
     @property
     def warehouse_parameter(self) -> str:
@@ -107,6 +113,14 @@ class SnowflakeDynamicTableConfig(SnowflakeRelationConfigBase):
 
     # --- normalized views, for COMPARISON ONLY -------------------------------
     # These never replace the stored values: DDL needs the user's exact text.
+
+    @property
+    def execute_as_user_normalized(self) -> Optional[str]:
+        """`execute_as_user` is an identifier, not a string literal: Snowflake folds it to upper
+        case and `SHOW` echoes only the resolved name, so it must compare case-insensitively --
+        the same normalization warehouses need, or a lower-case config value would diff against
+        its own readback and emit a spurious ALTER on every run."""
+        return _normalize_warehouse(self.execute_as_user)
 
     @property
     def cluster_by_normalized(self) -> Optional[str]:
@@ -152,6 +166,8 @@ class SnowflakeDynamicTableConfig(SnowflakeRelationConfigBase):
             "copy_grants": config_dict.get("copy_grants"),
             "immutable_where": config_dict.get("immutable_where"),
             "transient": config_dict.get("transient"),
+            "execute_as_user": config_dict.get("execute_as_user"),
+            "execute_as_user_reported": config_dict.get("execute_as_user_reported", True),
         }
 
         return super().from_dict(kwargs_dict)  # type:ignore
@@ -187,6 +203,11 @@ class SnowflakeDynamicTableConfig(SnowflakeRelationConfigBase):
                 "immutable_where"
             ),
             "transient": relation_config.config.extra.get("transient"),  # type:ignore
+            # A blank or `NONE`-literal value must reach the DDL as absent, or `optional()`
+            # (which only gates on None) renders a bare `execute as user` and the DDL fails.
+            "execute_as_user": _absent_to_none(
+                relation_config.config.extra.get("execute_as_user")  # type:ignore
+            ),
         }
 
         if refresh_mode := relation_config.config.extra.get("refresh_mode"):  # type:ignore
@@ -268,6 +289,8 @@ class SnowflakeDynamicTableConfig(SnowflakeRelationConfigBase):
             "row_access_policy": dynamic_table.get("row_access_policy"),
             "table_tag": dynamic_table.get("table_tag"),
             "cluster_by": cluster_by,
+            "execute_as_user": _absent_to_none(dynamic_table.get("execute_as_user")),
+            "execute_as_user_reported": "execute_as_user" in dynamic_table.keys(),
             "immutable_where": immutable_where,
             # agate.Row.get() returns None when the column is absent, which is the
             # correct default -- it means "not queried" and skips transient comparison.
@@ -351,6 +374,16 @@ class SnowflakeDynamicTableTransientConfigChange(RelationConfigChange):
         return True
 
 
+@dataclass(frozen=True, eq=True, unsafe_hash=True)
+class SnowflakeDynamicTableExecuteAsUserConfigChange(RelationConfigChange):
+    context: Optional[str] = None
+
+    @property
+    def requires_full_refresh(self) -> bool:
+        # `ALTER DYNAMIC TABLE ... SET/UNSET EXECUTE AS USER` applies in place
+        return False
+
+
 @dataclass
 class SnowflakeDynamicTableConfigChangeset:
     target_lag: Optional[SnowflakeDynamicTableTargetLagConfigChange] = None
@@ -363,6 +396,7 @@ class SnowflakeDynamicTableConfigChangeset:
     immutable_where: Optional[SnowflakeDynamicTableImmutableWhereConfigChange] = None
     cluster_by: Optional[SnowflakeDynamicTableClusterByConfigChange] = None
     transient: Optional[SnowflakeDynamicTableTransientConfigChange] = None
+    execute_as_user: Optional[SnowflakeDynamicTableExecuteAsUserConfigChange] = None
 
     @property
     def requires_full_refresh(self) -> bool:
@@ -384,6 +418,7 @@ class SnowflakeDynamicTableConfigChangeset:
                 self.immutable_where.requires_full_refresh if self.immutable_where else False,
                 self.cluster_by.requires_full_refresh if self.cluster_by else False,
                 self.transient.requires_full_refresh if self.transient else False,
+                self.execute_as_user.requires_full_refresh if self.execute_as_user else False,
             ]
         )
 
@@ -399,5 +434,6 @@ class SnowflakeDynamicTableConfigChangeset:
                 self.immutable_where,
                 self.cluster_by,
                 self.transient,
+                self.execute_as_user,
             ]
         )

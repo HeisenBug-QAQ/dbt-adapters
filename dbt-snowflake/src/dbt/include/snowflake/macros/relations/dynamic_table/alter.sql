@@ -34,6 +34,8 @@
         {%- if immutable_where and immutable_where.context -%}{{- log('Applying UPDATE IMMUTABLE WHERE to: ' ~ existing_relation) -}}{%- endif -%}
         {%- set cluster_by = configuration_changes.cluster_by -%}
         {%- if cluster_by and cluster_by.context -%}{{- log('Applying UPDATE CLUSTER BY to: ' ~ existing_relation) -}}{%- endif -%}
+        {%- set execute_as_user = configuration_changes.execute_as_user -%}
+        {%- if execute_as_user -%}{{- log('Applying UPDATE EXECUTE AS USER to: ' ~ existing_relation) -}}{%- endif -%}
 
         {#- Handle setting or unsetting immutable_where -#}
         {% if immutable_where %}
@@ -59,6 +61,18 @@
         {%- if cluster_by -%}{{- log('Applying DROP CLUSTERING KEY to: ' ~ existing_relation) -}}{%- endif -%}
         {% if has_prior_statements %};{% endif %}
         alter dynamic table {{ existing_relation }} drop clustering key
+        {% endif %}
+
+        {%- set has_prior_statements = has_prior_statements or cluster_by -%}
+
+        {#- Handle setting or unsetting execute_as_user -#}
+        {% if execute_as_user %}
+        {% if has_prior_statements %};{% endif %}
+        {% if execute_as_user.context %}
+        alter dynamic table {{ existing_relation }} set execute as user {{ execute_as_user.context }}
+        {% else %}
+        alter dynamic table {{ existing_relation }} unset execute as user
+        {% endif %}
         {% endif %}
 
     {%- endif -%}

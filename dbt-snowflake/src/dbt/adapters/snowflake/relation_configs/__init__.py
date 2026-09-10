@@ -11,6 +11,7 @@ from dbt.adapters.snowflake.relation_configs.dynamic_table import (
     SnowflakeDynamicTableImmutableWhereConfigChange,
     SnowflakeDynamicTableClusterByConfigChange,
     SnowflakeDynamicTableTransientConfigChange,
+    SnowflakeDynamicTableExecuteAsUserConfigChange,
 )
 from dbt.adapters.snowflake.relation_configs.interactive_table import (
     SnowflakeInteractiveTableClusterByConfigChange,

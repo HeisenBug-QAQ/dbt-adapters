@@ -27,6 +27,7 @@ from dbt.adapters.snowflake.relation_configs import (
     SnowflakeDynamicTableWarehouseConfigChange,
     SnowflakeDynamicTableImmutableWhereConfigChange,
     SnowflakeDynamicTableClusterByConfigChange,
+    SnowflakeDynamicTableExecuteAsUserConfigChange,
     SnowflakeDynamicTableTransientConfigChange,
     SnowflakeInteractiveTableClusterByConfigChange,
     SnowflakeInteractiveTableConfig,
@@ -182,6 +183,20 @@ class SnowflakeRelation(BaseRelation):
             config_change_collection.cluster_by = SnowflakeDynamicTableClusterByConfigChange(
                 action=RelationConfigChangeAction.alter,  # type:ignore
                 context=new_dynamic_table.cluster_by,
+            )
+
+        # Only compare when SHOW actually reported the column; otherwise the existing value is
+        # unknown, not None, and comparing would emit an ALTER on every run forever.
+        if (
+            existing_dynamic_table.execute_as_user_reported
+            and new_dynamic_table.execute_as_user_normalized
+            != existing_dynamic_table.execute_as_user_normalized
+        ):
+            config_change_collection.execute_as_user = (
+                SnowflakeDynamicTableExecuteAsUserConfigChange(
+                    action=RelationConfigChangeAction.alter,  # type:ignore
+                    context=new_dynamic_table.execute_as_user,
+                )
             )
 
         # Transient is only compared when both sides are explicitly known:

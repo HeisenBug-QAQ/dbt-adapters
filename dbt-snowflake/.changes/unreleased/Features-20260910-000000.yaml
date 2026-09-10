@@ -1,0 +1,12 @@
+kind: Features
+body: 'Add the `execute_as_user` config for dynamic tables. When set, `EXECUTE AS USER`
+    is emitted in the dynamic table''s CREATE/REPLACE DDL, so its refreshes run as
+    that user and `CURRENT_USER()`-gated masking or row-access policies resolve against
+    it -- including on the first refresh, which a post_hook cannot cover because dbt
+    refreshes the dynamic table before post_hooks run. Changing or removing the config
+    is applied in place via ALTER. Requires `GRANT IMPERSONATE ON USER <user>` and the
+    dynamic table''s owner role to be granted to that user.'
+time: 2026-09-10T00:00:00.000000+00:00
+custom:
+    Author: HeisenBug-QAQ
+    Issue: "0"

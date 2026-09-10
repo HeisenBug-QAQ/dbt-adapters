@@ -17,6 +17,7 @@ from dbt.adapters.snowflake.relation_configs import (
     SnowflakeDynamicTableInitializationWarehouseConfigChange,
     SnowflakeDynamicTableSchedulerConfigChange,
     SnowflakeDynamicTableTransientConfigChange,
+    SnowflakeDynamicTableExecuteAsUserConfigChange,
     SnowflakeDynamicTableWarehouseConfigChange,
 )
 from dbt_common.exceptions import CompilationError
@@ -1212,3 +1213,164 @@ class TestRefreshWarehouseChangeset:
 
         if changeset is not None:
             assert changeset.snowflake_warehouse is None
+
+
+class TestExecuteAsUserConfig:
+    """`execute_as_user` sets the identity a dynamic table's refreshes run as, so
+    CURRENT_USER()-gated policies resolve against that user."""
+
+    @staticmethod
+    def _config(**extra):
+        base = {
+            "name": "test_table",
+            "schema_name": "test_schema",
+            "database_name": "test_db",
+            "query": "SELECT 1",
+            "target_lag": "1 hour",
+            "snowflake_warehouse": "MY_WH",
+        }
+        base.update(extra)
+        return SnowflakeDynamicTableConfig.from_dict(base)
+
+    def test_execute_as_user_is_optional(self):
+        assert self._config().execute_as_user is None
+        assert self._config().execute_as_user_normalized is None
+
+    def test_execute_as_user_can_be_set(self):
+        assert self._config(execute_as_user="SVC_USER").execute_as_user == "SVC_USER"
+
+    def test_normalized_folds_case(self):
+        """Snowflake folds the identifier to upper case and SHOW echoes only the resolved name,
+        so a lower-case config value must compare equal to its own readback. Asserted against a
+        concrete value: comparing two normalizations to each other also passes for a no-op."""
+        assert self._config(execute_as_user="svc_user").execute_as_user_normalized == "svc_user"
+        assert self._config(execute_as_user="SVC_USER").execute_as_user_normalized == "svc_user"
+
+    def test_normalized_strips_quoted_identifier(self):
+        assert self._config(execute_as_user='"SvcUser"').execute_as_user_normalized == "svcuser"
+
+    def test_normalized_treats_absent_as_none(self):
+        assert self._config(execute_as_user="   ").execute_as_user_normalized is None
+
+
+class TestExecuteAsUserChangeset:
+    """Change detection for `execute_as_user` -- applied via ALTER, never a rebuild."""
+
+    def test_change_does_not_require_full_refresh(self):
+        change = SnowflakeDynamicTableExecuteAsUserConfigChange(
+            action=RelationConfigChangeAction.alter,
+            context="SVC_USER",
+        )
+        assert not change.requires_full_refresh
+
+    def test_changeset_reports_the_change(self):
+        changeset = SnowflakeDynamicTableConfigChangeset(
+            execute_as_user=SnowflakeDynamicTableExecuteAsUserConfigChange(
+                action=RelationConfigChangeAction.alter,
+                context="SVC_USER",
+            )
+        )
+        assert changeset.execute_as_user is not None
+        assert changeset.has_changes
+        assert not changeset.requires_full_refresh
+
+    def test_unset_is_a_valid_change(self):
+        """Removing the config emits `ALTER ... UNSET EXECUTE AS USER`, carried as a None context."""
+        changeset = SnowflakeDynamicTableConfigChangeset(
+            execute_as_user=SnowflakeDynamicTableExecuteAsUserConfigChange(
+                action=RelationConfigChangeAction.alter,
+                context=None,
+            )
+        )
+        assert changeset.execute_as_user is not None
+        assert changeset.execute_as_user.context is None
+        assert changeset.has_changes
+        assert not changeset.requires_full_refresh
+
+    def test_empty_changeset_has_no_execute_as_user(self):
+        changeset = SnowflakeDynamicTableConfigChangeset()
+        assert changeset.execute_as_user is None
+        assert not changeset.has_changes
+
+
+class TestExecuteAsUserChangeDetection:
+    """Drives the real change-detection path (`dynamic_table_config_changeset`) rather than
+    hand-building a change object, which is what makes normalization and the reported-column
+    handling actually covered."""
+
+    @staticmethod
+    def _relation_results(include_column=True, execute_as_user=None):
+        import agate
+
+        row = {
+            "name": "test_table",
+            "schema_name": "test_schema",
+            "database_name": "test_db",
+            "text": "SELECT 1",
+            "target_lag": "1 hour",
+            "warehouse": "MY_WH",
+            "refresh_mode": "AUTO",
+            "immutable_where": None,
+        }
+        types = [agate.Text()] * len(row)
+        if include_column:
+            row["execute_as_user"] = execute_as_user
+            types.append(agate.Text())
+        return {"dynamic_table": agate.Table([list(row.values())], list(row.keys()), types)}
+
+    @staticmethod
+    def _relation_config(execute_as_user=None):
+        from unittest.mock import MagicMock
+
+        rc = MagicMock()
+        rc.identifier = "test_table"
+        rc.schema = "test_schema"
+        rc.database = "test_db"
+        rc.compiled_code = "SELECT 1"
+        rc.config.extra = {
+            "target_lag": "1 hour",
+            "snowflake_warehouse": "MY_WH",
+            "execute_as_user": execute_as_user,
+        }
+        rc.config.get = lambda key, default=None: rc.config.extra.get(key, default)
+        return rc
+
+    def _changeset(self, include_column=True, existing=None, desired=None):
+        from dbt.adapters.snowflake.relation import SnowflakeRelation
+
+        return SnowflakeRelation.dynamic_table_config_changeset(
+            self._relation_results(include_column, existing),
+            self._relation_config(desired),
+        )
+
+    def test_setting_it_is_a_change(self):
+        changeset = self._changeset(existing=None, desired="SVC_USER")
+        assert changeset is not None
+        assert changeset.execute_as_user is not None
+        assert changeset.execute_as_user.context == "SVC_USER"
+
+    def test_matching_value_is_not_a_change(self):
+        changeset = self._changeset(existing="SVC_USER", desired="SVC_USER")
+        assert changeset is None or changeset.execute_as_user is None
+
+    def test_case_differing_value_is_not_a_change(self):
+        """Snowflake folds the identifier, so a lower-case config value must not re-ALTER forever."""
+        changeset = self._changeset(existing="SVC_USER", desired="svc_user")
+        assert changeset is None or changeset.execute_as_user is None
+
+    def test_removing_it_is_an_unset_change(self):
+        changeset = self._changeset(existing="SVC_USER", desired=None)
+        assert changeset is not None
+        assert changeset.execute_as_user is not None
+        assert changeset.execute_as_user.context is None
+
+    def test_blank_value_is_not_a_change(self):
+        """A blank value must be treated as absent, or the DDL renders a bare `execute as user`."""
+        changeset = self._changeset(existing=None, desired="   ")
+        assert changeset is None or changeset.execute_as_user is None
+
+    def test_unreported_column_is_never_a_change(self):
+        """When SHOW does not expose the column the existing value is unknown, not None. Comparing
+        anyway would emit an ALTER on every run that never converges."""
+        changeset = self._changeset(include_column=False, desired="SVC_USER")
+        assert changeset is None or changeset.execute_as_user is None
